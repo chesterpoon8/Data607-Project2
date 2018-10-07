@@ -1,0 +1,387 @@
+---
+title: "Project 2"
+author: "Chester Poon"
+date: "9/29/2018"
+output: 
+  prettydoc::html_pretty:
+    theme: cayman
+---
+
+#<u>Three Data Sets for Analysis</u>{#top}
+
+The three data sets that will be looked at are detailed below.  You can click on any section listed below to jump to it.
+
+[I. Food Trucks in San Francisco](#foodtruck)
+
+[II. Poverty by Selected Characteristics in the United States](#poverty)
+
+[III. Hate Crime Statistics](#hate)
+
+Before we start with working on any of the three data sets, let's load the appropriate libraries that will be commonly used throughout.
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(rgdal) 
+library(readxl)
+```
+
+Now that we've loaded the appropriate libraries, let's move on to our datasets.
+
+##Food Trucks in San Francisco {#foodtruck}
+
+Data Source: <https://data.sfgov.org/Economy-and-Community/Mobile-Food-Facility-Permit/rqzj-sfat>
+
+####Goal: Using this data set, find where in San Francisco is the highest concentration of food trucks.
+
+Our first step is to read in the csv file downloaded from the data source and to take a brief look at what's inside.
+
+```{r}
+food_full <- read.csv('Mobile_Food_Facility_Permit.csv')
+head(food_full)
+```
+
+There are 24 columns in this data frame, most of which are not applicable for our purposes. We also notice that the `FoodItems` column is colon-separated where it appears their primary food item is first in the list. Because there are so many food types, we'll only pull the first item for reference.
+
+We'll also work on keeping only the columns that matter to us, where the status is "Approved", and where latitude and longitude are values that make sense. 
+
+```{r}
+food <- food_full %>%
+  filter(Status == 'APPROVED', Latitude != 0, Longitude != 0) %>%
+  select(Applicant, Latitude, Longitude, FoodItems) %>%
+  separate(FoodItems, sep = ":", into = c('FoodItems')) 
+
+head(food)
+```
+
+Now that we have a preliminary data set for exploratory purposes, let's work on building a map of San Francisco and plot the locations of each approved food truck/cart. Ideally, using the ggmaps library and utilizing the goodle maps api would have been preferable, but it appears they've changed their pricing guidelines and it's no longer free. To substitute this, I've downloaded the shapefile for all the neighborhoods in San Francisco instead, which will give us what we need. Let's build our map.
+
+```{r}
+sf <- readOGR(dsn = "/Users/chesterpoon/Project2/sf",layer = "sf")
+sf_df <- fortify(sf)
+
+sf_map <- ggplot() +
+  geom_polygon(data = sf_df,
+            aes(x = long, y = lat, group = group),
+            color = 'black', fill = '#fce3c4', size = .05) +
+  theme(rect = element_blank())
+
+sf_map + geom_point(data = food,
+             aes(x = Longitude, y = Latitude),
+             color = '#37a347')
+  
+```
+
+It appears that most of our food vendors are concentrated along the eastern part of the city. A little more research reveals that these are the financial sectors of San Francisco. 
+
+Now, let's take a look to see what the most common food items are.
+
+```{r}
+nfood <- table(toupper(food$FoodItems))
+nfood <- data.frame(sort(nfood, decreasing = TRUE)[1:5])
+colnames(nfood) <- c("Foodtype", "n")
+
+ggplot(nfood,aes(x = Foodtype, y = n, fill = Foodtype)) +
+  geom_bar(stat = 'identity') +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank())
+```
+
+It's a bit unclear what the meaning of "Cold Truck" is. It's also somewhat misleading that a food truck sells everything but hot dogs. Clearly there are limitations with the data stemming from the data collection process.  In any case, the most common type of food truck/cart is "Cold Truck".  
+
+For fun, let's pretend we would like to start a food truck business. Let's see where the top 3 types of food trucks ("Cold Truck", "Burgers", "Hot Dogs") are located.
+
+```{r}
+top3 <- food %>%
+  filter(toupper(FoodItems) == "COLD TRUCK" | 
+           toupper(FoodItems) == "BURGERS" | 
+           toupper(FoodItems) == "HOT DOGS")
+
+sf_map +
+  geom_point(data = top3,
+             aes(x=Longitude, y=Latitude, colour = toupper(FoodItems))) +
+  scale_color_hue("Legend")
+```
+
+###Conclusion & Final Thoughts
+
+From our analysis, a vast majority of food trucks/carts exist on the eastern side of San Francisco. The most common type of food that is sold are "Cold Truck", Burgers and hot dogs. If we were to open our own imaginary food truck/cart, we would probably do well with a good burger truck in the northeast corner of San Francisco.  This is assuming that business would not do so well on the western section of the city, which could explain why there is such a dearth of food trucks there.
+
+A better analysis could occur if the data collection was better with clarifying information on the meaning of "Cold Truck". My suspicion is that vendors input the food type they sell as free text when completing their application. Perhaps a standardized method of classifying food type would be beneficial.
+
+[Navigate back to the top](#top)
+
+##Poverty by Selected Characteristics in the United States {#poverty}
+
+Data source: <https://www2.census.gov/programs-surveys/demo/tables/p60/263/pov_table3.xls>
+
+####Goal: What is the change in poverty rate by race and gender?
+
+The downloaded data from the census website is in the form of a Microsoft Excel file. We'll read in the file using `read_excel`.
+
+```{r}
+pov_full <- read_excel('pov_table3.xls')
+head(pov_full,n = 15)
+```
+
+Unfortunately, the dataset is quite messy where the true column names are inconsistently located throughout the table. For this dataset, I decided to rename all the columns in the set. The variables I care about for this analysis, I've given true names to better identify the columns I need. Let's properly construct the dataframe with the goal of feeding the data to `ggplot2`.  Below is the list of tasks we will do to clean the data:
+
+* Rename columns in the dataframe
+* Select just the columns we want
+* Filter out blank rows in the dataset, the rows that have "characteristic", and any row that starts with "Total".
+* Gather the appropriate columns to create a "long" version of the dataframe.
+* Split the year and the "poverty vs total" column into two columns: one showing year and the other column that identifies if the number shown is the total population or if it's the population living below the poverty line.
+* `Spread` the column `Pov|Total` to go "wide" so that I can more easily calculate the poverty rate.
+* Get rid of the multiple periods that occur after all the demographics in the Demographic column.
+* Create a new column where we can appropriately group demographic types into their proper categories.
+
+```{r}
+colnames(pov_full) <- c('Demographic','2016-Total',
+                        '2016-Below Poverty','d','e','f',
+                        '2017-Total','2017-Below Poverty',
+                        'i','j','k','l','m')
+poverty <- pov_full %>%
+  select(Demographic,
+         `2016-Total`,
+         `2016-Below Poverty`,
+         `2017-Total`,
+         `2017-Below Poverty`) %>%
+  filter(!is.na(`2016-Total`),
+         !is.na(Demographic),
+         Demographic != "Characteristic",
+         !str_detect(Demographic, "^Total\\,")) %>%
+  gather("Year_Descr","n",2:5) %>%
+  separate(Year_Descr, sep = "-", c("Year","Pov|Total")) %>%
+  spread(`Pov|Total`,n) %>%
+  mutate(`Poverty Rate` = as.numeric(`Below Poverty`) / as.numeric(Total))
+
+poverty$Demographic <- gsub("\\…*\\.*", "", poverty$Demographic)
+poverty$demo_type <- 'Race'
+poverty$demo_type[
+  poverty$Demographic=='Male' | poverty$Demographic=='Female'
+  ] <- 'Sex'
+poverty$demo_type[
+  str_detect(poverty$Demographic,
+             fixed("age", ignore_case = TRUE))
+  ] <- 'Age'
+poverty$demo_type[
+  str_detect(poverty$Demographic, "cities") | 
+    str_detect(poverty$Demographic, "area")
+  ] <- 'Residence'
+
+poverty$demo_type[
+  str_detect(poverty$Demographic, "born") | 
+    str_detect(poverty$Demographic, "citizen")
+  ] <- 'Nativity'
+
+poverty$demo_type[
+  str_detect(poverty$Demographic, fixed("east", ignore_case = TRUE)) |
+    str_detect(poverty$Demographic, fixed("west", ignore_case = TRUE)) |
+    str_detect(poverty$Demographic, fixed("north", ignore_case = TRUE)) |
+    str_detect(poverty$Demographic, fixed("south", ignore_case = TRUE))
+  ] <- 'Region'
+
+poverty$demo_type[
+  str_detect(poverty$Demographic,
+             fixed("work", ignore_case = TRUE)) | 
+    str_detect(poverty$Demographic, "full-time")
+  ] <- 'Work'
+
+poverty$demo_type[
+  str_detect(poverty$Demographic, fixed("degree", ignore_case = TRUE)) |
+    str_detect(poverty$Demographic, fixed("school", ignore_case = TRUE))
+  ] <- 'Education'
+
+poverty$demo_type[
+  str_detect(poverty$Demographic, "disability")
+  ] <- 'Disability'
+poverty$demo_type[
+  str_detect(poverty$Demographic, "Total")
+  ] <- 'Overall'
+
+poverty
+```
+
+Now that our data is clean and useable, we can feed the information into `ggplot2`.  We'll display the data using `facet_wrap` to get an idea of how poverty levels may have changed from 2016 to 2017.
+
+```{r}
+d1 <- poverty %>%
+  filter(demo_type == 'Age' |
+           demo_type == 'Nativity' |
+           demo_type == 'Race' |
+           demo_type == 'Sex' |
+           demo_type == 'Residence')
+
+d2 <- poverty %>%
+  filter(demo_type == 'Work' |
+           demo_type == 'Education' |
+           demo_type == 'Region' |
+           demo_type == 'Overall' |
+           demo_type == 'Disability')
+
+d_1 <- ggplot(d1[which(d1$`Poverty Rate`>0),], aes(x=Demographic, y=`Poverty Rate`))
+d_1 +
+  geom_bar(stat = "sum", position = "dodge", aes(fill = Year)) +
+  guides(colour = "colorbar",size = "none") +
+  facet_wrap( ~ demo_type, scales = "free_x") +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, hjust = 1, size = 6))
+
+d_2 <- ggplot(d2[which(d2$`Poverty Rate`>0),], aes(x=Demographic, y=`Poverty Rate`))
+d_2 +
+  geom_bar(stat = "sum", position = "dodge", aes(fill = Year)) +
+  guides(colour = "colorbar",size = "none") +
+  facet_wrap( ~ demo_type, scales = "free_x") +
+  theme_bw() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_text(angle = 60, hjust = 1, size = 6))
+```
+
+###Conclusion & Final Thoughts
+
+We can see that there has mostly been a slight decrease in the poverty rate from 2016 to 2017. If we drill down a bit further and take a look at the poverty rates across each characteristic, we find generally the same decrease in poverty rate. There is nothing particularly surprising about the data, but if we were to take a closer look at the intersections of each demographic characteristic (i.e. African American women from the South), that would be more interesting. This type of analysis would require the original raw data set.
+
+[Navigate back to the top](#top)
+
+##Hate Crime Statistics {#hate}
+
+Data Source: <https://ucr.fbi.gov/hate-crime/2016/tables/table-4>
+<https://ucr.fbi.gov/hate-crime/2015/tables-and-data-declarations/4tabledatadecpdf>
+
+####Goal: Has there been an increase/decrease in hate crimes from 2015 to 2016? What are the most significant changes if any?
+
+To do a comparitive analysis between 2015 and 2016 (Trump stopped tracking hate crime statistics shortly after taking office), we need to join two datasets: 2015 & 2016. Let's read them both in and take a look. I've also skipped the first 5 rows of each dataset to better display the data.
+
+```{r}
+hate_2015 <- read_excel('hate_crimes_2015.xls', skip = 5)
+hate_2016 <- read_excel('hate_crimes_2016.xls', skip = 5)
+
+hate_2015 <- hate_2015[,-c(4:5)]
+hate_2016 <- hate_2016[,-c(4:5)]
+
+hate_2015
+hate_2016
+```
+
+For our purposes, we won't need the hate crime type for our analysis, so we can remove all those columns. We're only really interested in the hate crime numbers for each demographic. We'll clean the data doing the following:
+
+* Change the column names that hold the number of incidents to be the year and the demographic as "type of hate crime".
+* Filter out the notes section of the data frame at the bottom, which will have a value of `NA` for year column, otherwise known as the number of incidents column.
+* We'll select the columns we want for each data set.
+* Join each data frame to form one.
+* Calculate the change in number of incidents from 2015 to 2016.
+* Calculate the change proportional to the number of incidents in 2015.
+* Create a new column to determine if the change was a negative or positive change (negative = decrease, positive = increase)
+* Create two data frames to feed into `ggplot2`: one for a "macro" categorical hate crime set and the other for a "micro" categorical hate crime set.
+
+```{r}
+colnames(hate_2015)[colnames(hate_2015)=="X__2"] <- "2015"
+colnames(hate_2016)[colnames(hate_2016)=="X__2"] <- "2016"
+colnames(hate_2015)[colnames(hate_2015)=="X__1"] <- "Type"
+colnames(hate_2016)[colnames(hate_2016)=="X__1"] <- "Type"
+
+hate_2015 <- hate_2015 %>%
+  filter(!is.na(`2015`)) %>%
+  select(Type,`2015`)
+
+hate_2016 <- hate_2016 %>%
+  filter(!is.na(`2016`)) %>%
+  select(Type,`2016`)
+
+hate_crimes <- full_join(hate_2015, hate_2016, by = "Type")
+
+hate_crimes$Change <- hate_crimes$`2016`-hate_crimes$`2015`
+hate_crimes$`Percent Change` <- hate_crimes$Change/hate_crimes$`2015`
+
+num_sign <- vector()
+
+for (i in hate_crimes$Change) {
+  if (i >= 0) {
+    num_sign <- c(num_sign,'pos')
+    } else {
+      num_sign <- c(num_sign,'neg')
+      }
+}
+
+hate_crimes$num_sign <- num_sign
+  
+hate_crimes_micro <- hate_crimes %>%
+  filter(str_detect(Type,'Anti'))
+
+hate_crimes_macro <- hate_crimes %>%
+  filter(!str_detect(Type,'Anti'),
+         Type != "Total")
+
+hate_crimes_macro
+hate_crimes_micro
+```
+
+Now that we have our datasets setup, let's first plot our "macro" level dataset and it's change proportional to the 2015 level. We'll also take a look at the raw change in hate crimes
+
+```{r}
+ggplot(hate_crimes_macro, aes(Type, `Percent Change`)) +
+  geom_bar(stat = "identity", aes(fill = Type)) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+ggplot(hate_crimes_macro, aes(Type, Change)) +
+  geom_bar(stat = "identity", aes(fill = Type)) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+We can see that race and religious affilation has the highest increase in count of reported hate crimes from 2015 to 2016. Proportionally though, the "multiple-bias incident" saw the highest proportional increase, which is most likely due to a lower count.
+
+Now we'll take a look at our "micro" level analysis.
+
+```{r}
+ggplot(hate_crimes_micro, aes(Type,`Percent Change`)) +
+  geom_bar(stat = "identity", aes(fill = num_sign)) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.title=element_blank())
+
+ggplot(hate_crimes_micro, aes(Type,Change)) +
+  geom_bar(stat = "identity", aes(fill = num_sign)) +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.title=element_blank())
+```
+
+The largest increase in overall count of reported hate crimes are anti-white, anti-Jewish, anti-Islamic, and anti_Hispanic in nature. The proportional change is much smaller for these same groups also indicating that their overall count of hate crimes is higher.  Let's take a closer look at the total hate crime incidents across both years for both the macro and micro groups. First we need to add a "Total" column.
+
+```{r}
+hate_crimes_macro$Total <- hate_crimes_macro$`2015` + hate_crimes_macro$`2016`
+hate_crimes_micro$Total <- hate_crimes_micro$`2015` + hate_crimes_micro$`2016`
+
+hate_crimes_macro
+hate_crimes_micro
+```
+
+Now that we've added the "Total" column to both data frames, let's plot them.
+
+```{r}
+ggplot(hate_crimes_macro, aes(Type,Total, fill = Total)) +
+  geom_bar(stat = "identity") +
+  scale_colour_gradientn(colors = 'navy') +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.title=element_blank())
+
+ggplot(hate_crimes_micro, aes(Type,Total, fill = Total)) +
+  geom_bar(stat = "identity") +
+  scale_colour_gradientn(colors = 'navy') +
+  coord_flip() +
+  theme_bw() +
+  theme(legend.title=element_blank())
+```
+
+###Conclusion & Final Thoughts
+Of all reported hate crimes, the most frequent (most prominent peaks) are anti-Black, anti-Jewish, anti-gay, and anti-white. For a more overall view, the most frequent are rooted in race/ethnicity or sexual orientation. Understanding that these are the most frequent reported hate crimes, their proportional increase from 2015 to 2016 in context is more disturbing.  Suddenly "small" proportional increases of 20-25% can mean significant increases in the shear number of reported hate crimes for certain groups. Of significant note are the moderate proportional increases with anti-white, anti-Jewish, anti-Hispanic, and anti-Islamic hate crimes suggesting America's growing tribalism due to the 2016 election played a significant factor in the increase.  
+
+Further analysis would be ideal in observing any kind of trend over the last 20 years. There are also limitations in the data where hate crime must be reported to be logged in the database.
+
+
+[Navigate back to the top](#top)
