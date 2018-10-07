@@ -19,7 +19,7 @@ The three data sets that will be looked at are detailed below.  You can click on
 
 Before we start with working on any of the three data sets, let's load the appropriate libraries that will be commonly used throughout.
 
-```{r}
+```{r,warning=FALSE,message=FALSE}
 library(tidyr)
 library(dplyr)
 library(ggplot2)
